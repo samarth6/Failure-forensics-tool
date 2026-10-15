@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+data/ffx.db
+data/llm_cache/
+data/traces/*.json
+web/node_modules/
+web/dist/
+.env
