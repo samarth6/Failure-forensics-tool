@@ -28,6 +28,9 @@ class TruthLabel(BaseModel):
     root_step: Optional[StepName] = None
     category: FailureCategory = FailureCategory.NO_FAILURE
     reasons: list[str] = Field(default_factory=list)
+    # Every step that really got something wrong, not only the first - the calibration
+    # analysis asks, per span, whether that step failed.
+    failed_steps: list[StepName] = Field(default_factory=list)
 
 
 def label(trace: Trace, key: AnswerKey) -> TruthLabel:
@@ -99,4 +102,5 @@ def label(trace: Trace, key: AnswerKey) -> TruthLabel:
         root_step=root_step,
         category=category,
         reasons=[f"{s.value}: {r}" for s, _, r in failures],
+        failed_steps=list(dict.fromkeys(s for s, _, _ in failures)),
     )

@@ -84,12 +84,12 @@ def build_trace(
     )
     if stop_after == StepName.INTAKE:
         trace.spans.append(
-            _span(tid, StepName.EXTRACTION, 1, {"normalized_text": normalized}, None,
+            _span(tid, StepName.EXTRACTION, 1, {"normalized_text": normalized, "detected_doc_type": doc_type, "quality_flags": [], "confidence": 4}, None,
                   status=SpanStatus.ERROR, error=SpanError(type="SchemaValidationError", message="confidence: must be <= 5"))
         )
         return trace
     trace.spans.append(
-        _span(tid, StepName.EXTRACTION, 1, {"normalized_text": normalized},
+        _span(tid, StepName.EXTRACTION, 1, {"normalized_text": normalized, "detected_doc_type": doc_type, "quality_flags": [], "confidence": 4},
               {"fields": fields, "evidence": _evidence(fields), "missing_fields": [], "confidence": 5})
     )
     trace.spans.append(

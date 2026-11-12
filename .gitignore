@@ -7,3 +7,4 @@ data/traces/*.json
 web/node_modules/
 web/dist/
 .env
+.claude/

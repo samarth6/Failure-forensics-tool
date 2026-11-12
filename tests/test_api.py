@@ -53,10 +53,11 @@ def test_unknown_trace_is_404(client):
 
 def test_diff_proposes_the_rule_based_fix(client):
     # No answer key in this fixture, so the correction comes from the failed signal's
-    # own proposal: drop the fabricated value.
+    # own proposal. The input holds exactly one policy-number candidate, so the rule
+    # proposes that real value rather than merely blanking the fabricated one.
     body = client.get(f"/api/traces/{client.failing_id}/diff/extraction").json()
     assert body["produced"]["fields"]["policy_number"] == "POL-12345"
-    assert body["should_have_produced"]["fields"]["policy_number"] == ""
+    assert body["should_have_produced"]["fields"]["policy_number"] == "POL-44821"
     assert body["source"] == "rule"
     assert "_meta" not in body["received"]
 
@@ -95,6 +96,24 @@ def test_invalid_human_correction_is_rejected(client):
         json={"verdict": "confirm", "step_name": "classification", "corrected_output": {"claim_category": "spaceship"}},
     )
     assert r.status_code == 422
+
+
+def test_confirming_a_flag_creates_an_eval_case(client):
+    flag = client.post(f"/api/traces/{client.failing_id}/flags", json={"verdict": "confirm"}).json()
+    assert flag["eval_case"]["action"] == "created"
+    matrix = client.get("/api/evals").json()
+    assert [c["step_name"] for c in matrix["cases"]] == ["extraction"]
+    assert matrix["cases"][0]["status"] == "not_run"
+    case = client.get(f"/api/evals/cases/{flag['eval_case']['case_id']}").json()
+    assert case["case"]["expected_source"] == "rule" and case["history"] == []
+
+
+def test_analytics_and_baseline(client):
+    assert client.post("/api/analytics/baselines", json={"minutes": 0}).status_code == 422
+    assert client.post("/api/analytics/baselines", json={"minutes": 15, "note": "manual"}).status_code == 200
+    body = client.get("/api/analytics?run_id=run_test").json()
+    assert body["overview"]["failures"] == 1
+    assert body["mttr"]["manual"]["n"] == 1
 
 
 def test_meta_lists_steps_and_categories(client):

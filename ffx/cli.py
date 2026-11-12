@@ -1,4 +1,4 @@
-"""Command-line entry point: ``python -m ffx <command>``."""
+"""Command-line entry point: ``python -m ffx <command>``. Every command is documented in COMMANDS.md."""
 
 from __future__ import annotations
 
@@ -13,6 +13,19 @@ from ffx.config import get_settings
 app = typer.Typer(add_completion=False, no_args_is_help=True, help="Failure Forensics Tool")
 corpus_app = typer.Typer(no_args_is_help=True, help="Synthetic corpus commands")
 app.add_typer(corpus_app, name="corpus")
+eval_app = typer.Typer(no_args_is_help=True, help="Eval cases from confirmed flags, and regression runs")
+app.add_typer(eval_app, name="eval")
+analytics_app = typer.Typer(no_args_is_help=True, help="Failure analytics and the MTTR baseline")
+app.add_typer(analytics_app, name="analytics")
+
+
+def _answer_keys() -> dict:
+    from ffx.corpus.generate import corpus_index, load_corpus
+
+    try:
+        return {doc_id: c.answer_key for doc_id, c in corpus_index(load_corpus()).items()}
+    except FileNotFoundError:
+        return {}
 
 
 def _out(msg: str = "") -> None:
@@ -344,6 +357,193 @@ def show(trace_id: str) -> None:
         for sig in span.signals:
             mark = "ok " if sig.passed else "!! "
             _out(f"    {mark}{sig.name} ({sig.kind.value}, {sig.severity.value}) {sig.detail[:160]}")
+
+
+# ---------------------------------------------------------------- eval
+
+
+@eval_app.command("generate")
+def eval_generate() -> None:
+    """(Re)build eval cases from every flagged trace's latest human verdict."""
+    from ffx.evals.generate import sync_cases
+    from ffx.tracing.store import TraceStore
+
+    report = sync_cases(TraceStore(), _answer_keys())
+    if not report:
+        _out("no flags yet - review a trace in the explorer (Confirm / Override) first")
+        return
+    for r in report:
+        _out(f"  {r.get('doc_id', '-'):<8} {r['action']:<8} {r.get('case_id') or '-':<16} {r['reason']}")
+
+
+@eval_app.command("run")
+def eval_run(
+    label: str = typer.Option("", help="What changed, e.g. 'intake prompt keeps signature'."),
+    model: Optional[str] = typer.Option(None, help="Evaluate against another local model."),
+) -> None:
+    """Re-run every eval case's step with the current prompts and model."""
+    from ffx.evals.generate import load_cases
+    from ffx.evals.runner import make_eval_runner
+    from ffx.tracing.store import TraceStore
+
+    store = TraceStore()
+    cases = load_cases(store)
+    if not cases:
+        _out("no eval cases - run `python -m ffx eval generate` after confirming a flag")
+        raise typer.Exit(1)
+    runner = make_eval_runner(store, model=model)
+    ok, message = runner.llm.inner.health()
+    if not ok:
+        _out(f"FAIL {message}")
+        raise typer.Exit(1)
+    _out(f"running {len(cases)} case(s)  model={runner.llm.model}  pipeline={runner.pipeline.version}")
+
+    def on_result(case, result):
+        detail = result["detail"]
+        failed = [a["description"] for a in detail["assertions"] if not a["passed"]]
+        cache = "cache" if detail["from_cache"] else f"{detail['duration_ms']} ms"
+        _out(f"  {detail['outcome'].upper():<5} {case.doc_id:<8} {case.step_name.value:<15} {cache:<9} {'; '.join(failed)[:110]}")
+
+    summary = runner.run(label=label, cases=cases, on_result=on_result)
+    _out(f"{summary['eval_run_id']}: {summary['passed']}/{summary['total']} passed, {summary['errors']} infrastructure error(s)")
+
+
+@eval_app.command("matrix")
+def eval_matrix() -> None:
+    """Show each case's pass/fail history across eval runs."""
+    from ffx.evals.runner import regression_matrix
+    from ffx.tracing.store import TraceStore
+
+    m = regression_matrix(TraceStore())
+    if not m["cases"]:
+        _out("no eval cases yet")
+        return
+    runs = m["runs"]
+    mark = {"pass": " ok ", "fail": "FAIL", "error": "err "}
+    _out("runs: " + "  ".join(f"[{i}] {r['eval_run_id']} {r['pipeline_version'] or ''} {r['label'] or ''}".rstrip() for i, r in enumerate(runs)))
+    _out(f"  {'doc':<8} {'step':<15} " + " ".join(f"[{i}] " for i in range(len(runs))) + " status")
+    for row in m["cases"]:
+        cells = " ".join(mark[row["cells"][r["eval_run_id"]]["outcome"]] if r["eval_run_id"] in row["cells"] else "  - " for r in runs)
+        seen = f"  (confirmed in {row['seen_in']} traces)" if row["seen_in"] > 1 else ""
+        _out(f"  {row['doc_id']:<8} {row['step_name']:<15} {cells}  {row['status']}{seen}")
+    _out("summary: " + ", ".join(f"{k}={v}" for k, v in sorted(m["summary"].items())))
+
+
+@eval_app.command("show")
+def eval_show(case_id: str) -> None:
+    """Print one eval case: its input, expected output and assertions."""
+    import json
+
+    from ffx.evals.cases import EvalCase
+    from ffx.tracing.store import TraceStore
+
+    body = TraceStore().load_eval_case_json(case_id)
+    if body is None:
+        _out(f"no case {case_id}")
+        raise typer.Exit(1)
+    case = EvalCase.model_validate_json(body)
+    _out(f"{case.case_id}  doc={case.doc_id}  step={case.step_name.value}  category={case.category.value}  from {case.verdict} flag")
+    _out(f"source trace {case.source_trace_id}  pipeline {case.pipeline_version}  model {case.model}")
+    _out(f"expected output from: {case.expected_source or 'none (checks only)'}")
+    _out("assertions:")
+    for a in case.assertions:
+        _out(f"  - {a.description}")
+    _out("\nbad output:\n  " + json.dumps(case.bad_output, ensure_ascii=False)[:600])
+    if case.expected_output:
+        _out("\nexpected output:\n  " + json.dumps(case.expected_output, ensure_ascii=False)[:600])
+
+
+# ---------------------------------------------------------------- analytics
+
+
+@analytics_app.command("report")
+def analytics_report(run_id: Optional[str] = typer.Option(None, "--run", help="Run to analyse (default: newest diagnosed).")) -> None:
+    """Category mix, per-step rates, MTTR, accuracy, judge quality and calibration."""
+    from ffx.evals.analytics import compute
+    from ffx.tracing.store import TraceStore
+
+    a = compute(TraceStore(), _answer_keys(), run_id)
+    if not a["run_id"]:
+        _out("no diagnosed runs yet - run `python -m ffx diagnose` first")
+        raise typer.Exit(1)
+    pct = lambda v: "-" if v is None else f"{100 * v:.0f}%"  # noqa: E731
+    o = a["overview"]
+    _out(f"run {a['run_id']}: {o['diagnosed']}/{o['traces']} diagnosed, {o['failures']} failures ({pct(o['failure_rate'])})")
+
+    _out("\ncategory mix (diagnosed failures):")
+    for c in a["category_mix"]:
+        _out(f"  {c['count']:>3}  {pct(c['share']):>4}  {c['label']}")
+    _out("\nper step:            root  own-fail  propagated")
+    for s in a["per_step"]:
+        _out(f"  {s['step']:<16} {s['root_cause']:>6} {s['failed_own_checks']:>9} {s['propagation']:>11}")
+
+    m = a["mttr"]
+    auto = m["automated"]
+    _out(f"\ntime to root cause (automated, {auto['n']} failures): mean {auto['mean_ms']} ms, median {auto['median_ms']} ms, p95 {auto['p95_ms']} ms")
+    if m["manual"]["n"]:
+        _out(f"manual baseline: {m['manual']['mean_minutes']} min over {m['manual']['n']} timing(s)  ->  {m['speedup']}x faster")
+    else:
+        _out(f"manual baseline: none. {m['note']}")
+
+    t = a["versus_truth"]
+    if t:
+        _out(
+            f"\nvs ground truth ({t['n']} traces): precision {pct(t['precision'])}, recall {pct(t['recall'])}, "
+            f"root-step accuracy {pct(t['root_accuracy'])}, category accuracy {pct(t['category_accuracy'])}"
+        )
+    h = a["versus_human"]
+    _out(
+        f"vs human review ({h['reviewed']} reviewed): agreement {pct(h['agreement'])}  "
+        f"wrong step {h['wrong_step']}, wrong category {h['wrong_category']}, false alarm {h['false_alarm']}, missed {h['missed']}"
+    )
+    j = a["judge"]
+    _out(
+        f"judge: {j['verdicts']} verdicts ({j['discarded_unquoted']} discarded), accuracy {pct(j['accuracy'])}, "
+        f"precision {pct(j['precision'])}, recall {pct(j['recall'])}  by provider {j['by_provider']}"
+    )
+
+    cal = a["calibration"]
+    _out(f"\nself-reported confidence vs step actually failed (basis: {cal['self_report_basis']}):")
+    for b in cal["self_report"]:
+        _out(f"  {b['confidence']}/5  n={b['n']:>3}  failed {pct(b['failure_rate'])}")
+    _out("diagnosis confidence vs root step correct (ground truth):")
+    for b in cal["diagnosis_confidence"]:
+        _out(f"  {b['range']}  n={b['n']:>3}  accurate {pct(b['accuracy'])}")
+    e = a["evals"]
+    _out(f"\neval cases: {e['cases']}  statuses {e['status']}  latest run pass rate {pct(e['latest_pass_rate'])}")
+
+
+@analytics_app.command("baseline")
+def analytics_baseline(
+    minutes: float = typer.Argument(..., help="How long root-causing the trace took you by hand."),
+    trace: Optional[str] = typer.Option(None, help="The trace you debugged."),
+    note: str = typer.Option("", help="How you did it, e.g. 'read JSON trace files, no explorer'."),
+) -> None:
+    """Record one manual debugging timing - the honest denominator for the MTTR claim."""
+    from ffx.models import utcnow
+    from ffx.tracing.span import new_id
+    from ffx.tracing.store import TraceStore
+
+    TraceStore().add_baseline(
+        {"baseline_id": new_id("base"), "trace_id": trace, "minutes": minutes, "note": note, "created_at": utcnow().isoformat()}
+    )
+    _out(f"recorded {minutes} min manual baseline")
+
+
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", help="Interface to bind. Keep local unless you mean to share it."),
+    port: int = typer.Option(8000),
+) -> None:
+    """Start the API and trace explorer (open http://127.0.0.1:8000)."""
+    import uvicorn
+
+    from ffx.api import WEB_DIST
+
+    if not WEB_DIST.exists():
+        _out("INFO frontend not built yet - API only. Build it with: cd web && npm install && npm run build")
+    _out(f"explorer at http://{host}:{port}   API docs at http://{host}:{port}/docs")
+    uvicorn.run("ffx.api:app", host=host, port=port, log_level="warning")
 
 
 def main() -> None:

@@ -67,6 +67,8 @@ def intake_prompt(doc: RawDocument) -> str:
         "boilerplate or email disclaimers removed. Keep EVERY claim-relevant sentence, "
         "including names, policy numbers, reference numbers, dates, amounts, addresses and "
         "the description of what happened. Do not summarise or invent anything.\n"
+        "   Keep the subject line and the sign-off (the name under 'Kind regards' or similar): "
+        "they are often the only place the claimant's name appears. They are not boilerplate.\n"
         "2. detected_doc_type: claim_notice if someone is reporting an insurance loss, "
         "otherwise the closest other type, or unknown.\n"
         "3. quality_flags: any problems you notice with the document.\n"

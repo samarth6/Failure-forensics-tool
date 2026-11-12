@@ -49,7 +49,9 @@ class PipelineRunner:
 
     # ------------------------------------------------------------ one step
 
-    def _execute(self, step: StepName, step_input: BaseModel) -> BaseModel:
+    def execute_step(self, step: StepName, step_input: BaseModel) -> BaseModel:
+        """Run one step under the active trace. Public because eval cases re-run a
+        single step on a frozen input, outside any full pipeline run."""
         spec = STEPS[step]
         prompt = spec.build_prompt(step_input)
         with self.tracer.span(step, step_input) as rec:
@@ -99,7 +101,7 @@ class PipelineRunner:
         ) as trace:
             outputs: dict[StepName, BaseModel] = {}
             for step in STEP_ORDER:
-                outputs[step] = self._execute(step, build_input(step, doc, outputs))
+                outputs[step] = self.execute_step(step, build_input(step, doc, outputs))
         return trace
 
     def run_corpus(
@@ -172,7 +174,7 @@ class PipelineRunner:
                     outputs[step] = corrected_output
                     continue
 
-                outputs[step] = self._execute(step, step_input)
+                outputs[step] = self.execute_step(step, step_input)
         return trace
 
 

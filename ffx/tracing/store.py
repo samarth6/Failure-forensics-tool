@@ -113,7 +113,20 @@ CREATE TABLE IF NOT EXISTS eval_results (
     detail            TEXT,
     PRIMARY KEY (eval_run_id, case_id)
 );
+
+-- Manual debugging timings: the honest denominator for the MTTR comparison.
+CREATE TABLE IF NOT EXISTS mttr_baselines (
+    baseline_id       TEXT PRIMARY KEY,
+    trace_id          TEXT,
+    minutes           REAL NOT NULL,
+    note              TEXT,
+    created_at        TEXT NOT NULL
+);
 """
+
+# Columns added after a table first shipped. CREATE TABLE IF NOT EXISTS never alters an
+# existing table, so databases created by an earlier version are patched on open.
+MIGRATIONS = [("eval_runs", "pipeline_version", "TEXT")]
 
 
 class TraceStore:
@@ -124,6 +137,10 @@ class TraceStore:
         self.trace_dir.mkdir(parents=True, exist_ok=True)
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            for table, column, kind in MIGRATIONS:
+                existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+                if column not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -327,12 +344,33 @@ class TraceStore:
             rows = conn.execute("SELECT body FROM eval_cases ORDER BY created_at").fetchall()
         return [r["body"] for r in rows]
 
-    def save_eval_run(self, eval_run_id: str, *, label: str, model: str, results: list[dict[str, Any]]) -> None:
+    def load_eval_case_json(self, case_id: str) -> Optional[str]:
+        with self._conn() as conn:
+            row = conn.execute("SELECT body FROM eval_cases WHERE case_id = ?", (case_id,)).fetchone()
+        return row["body"] if row else None
+
+    def delete_eval_case(self, case_id: str) -> None:
+        """Retire a case, e.g. after a reviewer changes their mind to "not a failure".
+        Past results stay in eval_results; the matrix only shows live cases."""
+        with self._conn() as conn:
+            conn.execute("DELETE FROM eval_cases WHERE case_id = ?", (case_id,))
+
+    def save_eval_run(
+        self,
+        eval_run_id: str,
+        *,
+        label: str,
+        model: str,
+        results: list[dict[str, Any]],
+        pipeline_version: str = "",
+    ) -> None:
         passed = sum(1 for r in results if r["passed"])
         with self._conn() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO eval_runs VALUES (?,?,?,?,?,?)",
-                (eval_run_id, utcnow().isoformat(), label, model, len(results), passed),
+                """INSERT OR REPLACE INTO eval_runs
+                   (eval_run_id, started_at, label, model, total, passed, pipeline_version)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (eval_run_id, utcnow().isoformat(), label, model, len(results), passed, pipeline_version),
             )
             conn.executemany(
                 "INSERT OR REPLACE INTO eval_results VALUES (?,?,?,?)",
@@ -350,4 +388,26 @@ class TraceStore:
                    FROM eval_results r JOIN eval_runs e ON e.eval_run_id = r.eval_run_id
                    ORDER BY e.started_at"""
             ).fetchall()
-        return [dict(r) for r in rows]
+        out = [dict(r) for r in rows]
+        for row in out:
+            row["detail"] = json.loads(row["detail"]) if row.get("detail") else {}
+        return out
+
+    # ------------------------------------------------------------ baselines
+
+    def add_baseline(self, baseline: dict[str, Any]) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO mttr_baselines VALUES (?,?,?,?,?)",
+                (
+                    baseline["baseline_id"],
+                    baseline.get("trace_id"),
+                    float(baseline["minutes"]),
+                    baseline.get("note", ""),
+                    baseline.get("created_at") or utcnow().isoformat(),
+                ),
+            )
+
+    def list_baselines(self) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            return [dict(r) for r in conn.execute("SELECT * FROM mttr_baselines ORDER BY created_at").fetchall()]

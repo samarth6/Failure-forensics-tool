@@ -267,7 +267,10 @@ def add_flag(trace_id: str, body: FlagRequest) -> dict[str, Any]:
         "created_at": utcnow().isoformat(),
     }
     store().save_flag(flag)
-    return flag
+    # Phase 5: the verdict becomes (or retires) an eval case right away.
+    from ffx.evals.generate import sync_trace
+
+    return {**flag, "eval_case": sync_trace(store(), trace_id, answer_key=answer_key(trace.doc_id))}
 
 
 @app.get("/api/flags")
@@ -299,6 +302,85 @@ async def rediagnose(trace_id: str, counterfactual: bool = True, judge: bool = T
         return analyzer.analyze(trace).model_dump(mode="json")
 
     return await run_in_threadpool(work)
+
+
+# --------------------------------------------------------------------------
+# Evals and analytics (Phase 5)
+# --------------------------------------------------------------------------
+
+
+def answer_keys() -> dict[str, AnswerKey]:
+    return {doc_id: c.answer_key for doc_id, c in corpus().items()}
+
+
+@app.get("/api/evals")
+def evals() -> dict[str, Any]:
+    from ffx.evals.runner import regression_matrix
+
+    return regression_matrix(store())
+
+
+@app.get("/api/evals/cases/{case_id}")
+def eval_case(case_id: str) -> dict[str, Any]:
+    from ffx.evals.cases import EvalCase
+
+    body = store().load_eval_case_json(case_id)
+    if body is None:
+        raise HTTPException(404, f"no eval case {case_id}")
+    history = [
+        {"eval_run_id": r["eval_run_id"], "label": r["label"], "started_at": r["started_at"], **r["detail"]}
+        for r in store().eval_results_matrix()
+        if r["case_id"] == case_id
+    ]
+    return {"case": EvalCase.model_validate_json(body).model_dump(mode="json"), "history": history}
+
+
+@app.post("/api/evals/generate")
+def eval_generate() -> list[dict[str, Any]]:
+    from ffx.evals.generate import sync_cases
+
+    return sync_cases(store(), answer_keys())
+
+
+class EvalRunRequest(BaseModel):
+    label: str = ""
+    model: Optional[str] = None
+
+
+@app.post("/api/evals/run")
+async def eval_run(body: EvalRunRequest) -> dict[str, Any]:
+    """Re-run every case. Cached cases answer instantly; changed prompts call the model."""
+
+    def work() -> dict[str, Any]:
+        from ffx.evals.runner import make_eval_runner
+
+        runner = make_eval_runner(store(), model=body.model)
+        ok, message = runner.llm.inner.health()
+        if not ok:
+            raise HTTPException(503, message)
+        return runner.run(label=body.label)
+
+    return await run_in_threadpool(work)
+
+
+@app.get("/api/analytics")
+def analytics(run_id: Optional[str] = None) -> dict[str, Any]:
+    from ffx.evals.analytics import compute
+
+    return compute(store(), answer_keys(), run_id)
+
+
+class BaselineRequest(BaseModel):
+    minutes: float = Field(gt=0)
+    trace_id: Optional[str] = None
+    note: str = ""
+
+
+@app.post("/api/analytics/baselines")
+def add_baseline(body: BaselineRequest) -> dict[str, Any]:
+    baseline = {"baseline_id": new_id("base"), **body.model_dump(), "created_at": utcnow().isoformat()}
+    store().add_baseline(baseline)
+    return baseline
 
 
 # --------------------------------------------------------------------------
