@@ -19,6 +19,18 @@ analytics_app = typer.Typer(no_args_is_help=True, help="Failure analytics and th
 app.add_typer(analytics_app, name="analytics")
 
 
+BATTERY_HELP = "Run even on battery power. Not recommended: this laptop has cut power under model load."
+
+
+def _require_mains(allow_battery: bool) -> None:
+    from ffx.power import on_battery
+
+    if on_battery() and not allow_battery:
+        _out("STOP the laptop is on battery. Model runs here have cut the power before (see ffx/power.py).")
+        _out("     Plug in the charger, then re-run - or pass --allow-battery to risk it.")
+        raise typer.Exit(1)
+
+
 def _answer_keys() -> dict:
     from ffx.corpus.generate import corpus_index, load_corpus
 
@@ -165,14 +177,17 @@ def run(
     notes: str = typer.Option("", help="Free-text note stored on the run."),
     resume: Optional[str] = typer.Option(None, "--resume", help="Continue an interrupted run: skip documents it already traced."),
     pause: float = typer.Option(0.0, help="Seconds to rest after each document that called the model, to let the GPU cool."),
+    allow_battery: bool = typer.Option(False, help=BATTERY_HELP),
 ) -> None:
     """Run corpus documents through the traced pipeline."""
     import time
 
     from ffx.corpus.generate import load_corpus
     from ffx.pipeline.runner import make_runner
+    from ffx.power import on_battery
     from ffx.tracing.otel import maybe_exporter
 
+    _require_mains(allow_battery)
     docs = load_corpus()
     if doc:
         docs = [d for d in docs if d.document.doc_id in set(doc)]
@@ -203,6 +218,15 @@ def run(
         store.create_run(run_id, pipeline_version=runner.version, model=runner.llm.model, notes=notes)
     _out(f"{run_id}  pipeline={runner.version}  model={runner.llm.model}  docs={len(docs)}")
 
+    def guarded(items):
+        # The charger can be pulled mid-run. Stop between documents, cleanly, rather
+        # than let the next model load cut the power; every finished trace is saved.
+        for item in items:
+            if on_battery() and not allow_battery:
+                _out(f"STOP charger unplugged. Plug it back in and continue with: python -m ffx run --resume {run_id}")
+                return
+            yield item
+
     def progress(trace, cdoc, seconds):
         steps = " ".join(f"{s.step_name.value[:4]}:{s.status.value[:2]}" for s in trace.spans)
         cached = sum(1 for s in trace.spans if s.from_cache)
@@ -213,7 +237,7 @@ def run(
         if pause and cached < len(trace.spans):
             time.sleep(pause)
 
-    runner.run_corpus(docs, run_id=run_id, on_trace=progress)
+    runner.run_corpus(guarded(docs), run_id=run_id, on_trace=progress)
     _out(f"done. cache {runner.llm.stats()}")
 
 
@@ -226,8 +250,11 @@ def diagnose(
     doc: Optional[List[str]] = typer.Option(None, "--doc", help="Only these doc_id(s). Repeatable."),
     counterfactual: bool = typer.Option(True, help="Verify root causes by counterfactual re-run."),
     judge: bool = typer.Option(True, help="Use the LLM judge on ambiguous extractions."),
+    allow_battery: bool = typer.Option(False, help=BATTERY_HELP),
 ) -> None:
     """Diagnose every trace in a run, and score the verdicts against corpus ground truth."""
+    if counterfactual:  # counterfactual re-runs call the local model
+        _require_mains(allow_battery)
     from ffx.analyzer.diagnose import Analyzer
     from ffx.analyzer.judge import build_judge
     from ffx.analyzer.truth import label
@@ -395,8 +422,10 @@ def eval_generate() -> None:
 def eval_run(
     label: str = typer.Option("", help="What changed, e.g. 'intake prompt keeps signature'."),
     model: Optional[str] = typer.Option(None, help="Evaluate against another local model."),
+    allow_battery: bool = typer.Option(False, help=BATTERY_HELP),
 ) -> None:
     """Re-run every eval case's step with the current prompts and model."""
+    _require_mains(allow_battery)
     from ffx.evals.generate import load_cases
     from ffx.evals.runner import make_eval_runner
     from ffx.tracing.store import TraceStore

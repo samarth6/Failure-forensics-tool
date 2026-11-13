@@ -18,6 +18,13 @@ The commands are listed in the order you would normally use them.
 | `python -m ffx corpus generate [--seed 7]` | Writes the 220 synthetic claim documents, each with an answer key, to `data/corpus.json`. The same seed always gives the same corpus. |
 | `python -m ffx corpus stats` | Shows distributions: failure conditions, designed pressure points, categories, channels and document lengths. |
 
+## Power safety
+
+`run`, `diagnose` and `eval run` call the local model, which makes the GPU and CPU draw a
+burst of power. On this laptop, running them on battery has cut the power outright. So
+these commands refuse to start on battery, and `run` stops cleanly between documents if
+the charger is unplugged mid-run. Pass `--allow-battery` to override, at your own risk.
+
 ## Phases 1–2: run the traced pipeline
 
 | Command | What it does |

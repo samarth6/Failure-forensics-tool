@@ -9,10 +9,11 @@ That's why the demo uses the stored run.
 
 ## Before you start
 
-1. Terminal 1: `ollama serve`
-2. Terminal 2: `python -m ffx doctor` should print `OK` for Ollama. Then run
+1. **Plug in the charger.** Model commands refuse to run on battery.
+2. Terminal 1: `ollama serve`
+3. Terminal 2: `python -m ffx doctor` should print `OK` for Ollama. Then run
    `python -m ffx serve` and open http://127.0.0.1:8000.
-3. In the top bar, pick run **run_20260925_191446**.
+4. In the top bar, pick run **run_20260925_191446**.
 
 ---
 

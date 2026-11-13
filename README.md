@@ -217,7 +217,8 @@ run will settle it.
 - **Rule-based signals are domain-specific.** The grounding ladder is general; the peril
   and category rules are written for insurance claims.
 - **Small hardware.** It's developed on a 4 GB GTX 1650 laptop with about 1 GB of free
-  RAM, so runs are sequential and the default model is 3B.
+  RAM, so runs are sequential and the default model is 3B. Model-heavy commands refuse to
+  start on battery power, after unattended runs on battery cut the power.
 
 ---
 
@@ -304,6 +305,7 @@ ffx/
   analyzer/          grounding, signals, taxonomy, judge, counterfactual, diagnosis, ground truth
   evals/             eval cases, generation from flags, regression runner, analytics
   corpus/            synthetic documents and failure conditions
+  power.py           refuses model-heavy runs on battery power
   api.py, cli.py     HTTP API and command line
 web/                 React + React Flow trace explorer
 tests/               pytest suite
