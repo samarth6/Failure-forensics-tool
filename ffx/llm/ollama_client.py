@@ -87,7 +87,11 @@ class OllamaClient:
             tags = self._client.get("/api/tags", timeout=10.0)
             tags.raise_for_status()
         except httpx.HTTPError as exc:
-            return False, f"Ollama unreachable at {self.settings.ollama_host}: {exc}"
+            return False, (
+                f"Ollama unreachable at {self.settings.ollama_host}: {exc}\n"
+                "     Start it with `ollama serve` in another terminal (or open the Ollama app), "
+                "then check with `python -m ffx doctor`."
+            )
         available = [m.get("name") for m in tags.json().get("models", [])]
         if self.model not in available:
             return False, f"model {self.model!r} not pulled. Available: {available or 'none'}"

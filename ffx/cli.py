@@ -163,8 +163,12 @@ def run(
     doc: Optional[List[str]] = typer.Option(None, "--doc", help="Specific doc_id(s). Repeatable."),
     mode: Optional[List[str]] = typer.Option(None, "--mode", help="Only these failure modes. Repeatable."),
     notes: str = typer.Option("", help="Free-text note stored on the run."),
+    resume: Optional[str] = typer.Option(None, "--resume", help="Continue an interrupted run: skip documents it already traced."),
+    pause: float = typer.Option(0.0, help="Seconds to rest after each document that called the model, to let the GPU cool."),
 ) -> None:
     """Run corpus documents through the traced pipeline."""
+    import time
+
     from ffx.corpus.generate import load_corpus
     from ffx.pipeline.runner import make_runner
     from ffx.tracing.otel import maybe_exporter
@@ -176,18 +180,27 @@ def run(
         docs = [d for d in docs if d.failure_mode.value in set(mode)]
     if limit:
         docs = docs[:limit]
-    if not docs:
-        _out("no documents selected")
-        raise typer.Exit(1)
 
     runner, store = make_runner(exporter=maybe_exporter())
+    if resume:
+        if resume not in {r["run_id"] for r in store.list_runs()}:
+            _out(f"no run {resume}")
+            raise typer.Exit(1)
+        done = {row["doc_id"] for row in store.list_traces(run_id=resume)}
+        docs = [d for d in docs if d.document.doc_id not in done]
+        _out(f"resuming {resume}: {len(done)} document(s) already traced, {len(docs)} to go")
+    if not docs:
+        _out("no documents selected" if not resume else "nothing left to run")
+        raise typer.Exit(0 if resume else 1)
+
     ok, message = runner.llm.inner.health()
     if not ok:
         _out(f"FAIL {message}")
         raise typer.Exit(1)
 
-    run_id = "run_" + datetime.now().strftime("%Y%m%d_%H%M%S")
-    store.create_run(run_id, pipeline_version=runner.version, model=runner.llm.model, notes=notes)
+    run_id = resume or "run_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    if not resume:
+        store.create_run(run_id, pipeline_version=runner.version, model=runner.llm.model, notes=notes)
     _out(f"{run_id}  pipeline={runner.version}  model={runner.llm.model}  docs={len(docs)}")
 
     def progress(trace, cdoc, seconds):
@@ -197,6 +210,8 @@ def run(
             f"  {cdoc.document.doc_id}  {cdoc.failure_mode.value:<22} {trace.status.value:<6} "
             f"{seconds:6.1f}s  {steps}  cache={cached}/{len(trace.spans)}"
         )
+        if pause and cached < len(trace.spans):
+            time.sleep(pause)
 
     runner.run_corpus(docs, run_id=run_id, on_trace=progress)
     _out(f"done. cache {runner.llm.stats()}")

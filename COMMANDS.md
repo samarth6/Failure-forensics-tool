@@ -23,6 +23,8 @@ The commands are listed in the order you would normally use them.
 | Command | What it does |
 |---|---|
 | `python -m ffx run [--limit N] [--doc doc_005] [--mode ocr_garble] [--notes "..."]` | Runs documents through intake → extraction → classification → summarization and saves one trace per document under a new `run_id`. Repeat `--doc` or `--mode` to select several. Re-runs are answered from the replay cache. |
+| `python -m ffx run --resume <run_id>` | Continues an interrupted run, skipping documents it already traced. |
+| `python -m ffx run --pause 20` | Rests 20 seconds after each document that called the model, so a long run doesn't overheat the laptop. Combine it with any of the options above. |
 | `python -m ffx show <trace_id>` | Prints one trace step by step: status, tokens, attempts, output and signals. |
 
 ## Phase 3: diagnose
