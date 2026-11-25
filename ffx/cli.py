@@ -204,12 +204,20 @@ def run(
     _out(f"{run_id}  pipeline={runner.version}  model={runner.llm.model}  docs={len(docs)}")
 
     def progress(trace, cdoc, seconds):
-        steps = " ".join(f"{s.step_name.value[:4]}:{s.status.value[:2]}" for s in trace.spans)
         cached = sum(1 for s in trace.spans if s.from_cache)
         _out(
             f"  {cdoc.document.doc_id}  {cdoc.failure_mode.value:<22} {trace.status.value:<6} "
-            f"{seconds:6.1f}s  {steps}  cache={cached}/{len(trace.spans)}"
+            f"{seconds:6.1f}s  cache={cached}/{len(trace.spans)}"
         )
+        # One line per step: which came from the replay cache and which called the model.
+        for s in trace.spans:
+            took = f"{s.duration_ms / 1000:6.1f}s"
+            if s.from_cache:
+                # Wall time is ~0 for a replay; show what the model originally took.
+                recorded = sum(a.latency_ms for a in s.attempts) / 1000
+                _out(f"      {s.step_name.value:<14} {s.status.value:<8} CACHED {took}  (originally {recorded:.1f}s)")
+            else:
+                _out(f"      {s.step_name.value:<14} {s.status.value:<8} FRESH  {took}")
         if pause and cached < len(trace.spans):
             time.sleep(pause)
 
