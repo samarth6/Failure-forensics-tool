@@ -59,7 +59,8 @@ export default function TraceGraph({
   const nodes: StepNodeType[] = STEPS.map((step, i) => ({
     id: step,
     type: "step",
-    position: { x: i * 235, y: 0 },
+    // Cards are ~216px wide; the rest of the step is the gap that holds the edge label.
+    position: { x: i * 320, y: 0 },
     data: {
       step,
       role: roleFor(step, trace, diagnosis),
@@ -87,6 +88,7 @@ export default function TraceGraph({
       },
       labelStyle: { fontSize: 11, fill: "var(--muted)" },
       labelBgStyle: { fill: "var(--panel)" },
+      labelBgPadding: [6, 3] as [number, number],
     };
   });
 
@@ -103,6 +105,9 @@ export default function TraceGraph({
         elementsSelectable={false}
         zoomOnScroll={false}
         panOnScroll={false}
+        panOnDrag={false}
+        zoomOnPinch={false}
+        zoomOnDoubleClick={false}
         preventScrolling={false}
         fitView
         fitViewOptions={{ padding: 0.15 }}
